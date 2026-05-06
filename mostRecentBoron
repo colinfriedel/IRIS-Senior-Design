@@ -19,6 +19,11 @@ bool retractSent = false;
 bool publishingComplete = false;
 bool cycleInProgress = false;
 bool retractConfirmed = true;
+bool cycleStartPublished = false;
+
+// sd pending for timing
+String pendingSD[10];
+int pendingCount = 0;
 
 // timer
 unsigned long lastDeploy = 0;
@@ -65,6 +70,17 @@ void appendToSD(String line) {
     Serial.println("Saved to SD: " + line);
 }
 
+bool publishWithRetry(String payload) {
+    for (int i = 0; i < 3; i++) {
+        if (Particle.publish(PUBLISH_EVENT, payload, PRIVATE)) {
+            return true;
+        }
+        Serial.println("Publish failed, retrying...");
+        delay(1500);
+    }
+    return false;
+}
+
 void publishRow(String line) {
     if (line.length() == 0) return;
 
@@ -90,9 +106,12 @@ void publishRow(String line) {
     payload += "\"Checksum\":\"" + fields[6] + "\"";
     payload += "}";
 
-    Particle.publish(PUBLISH_EVENT, payload, PRIVATE);
+    if (publishWithRetry(payload)) {
+        Serial.println("Published: " + payload);
+    } else {
+        Serial.println("Failed to publish after 3 attempts: " + payload);
+    }
     lastPublish = millis();
-    Serial.println("Published: " + payload);
 }
 
 void publishNextFromSD() {
@@ -145,9 +164,10 @@ void publishNextFromSD() {
 }
 
 int triggerDeploy(String arg) {
-    cycleInProgress = true;
+    //cycleInProgress = true;
     retractSent = false;
     retractConfirmed = false;
+    lastDeploy = millis();
 
     //Serial.println("Waking modem...");
     //Serial1.print("$W");
@@ -199,7 +219,7 @@ void setup() {
 void loop() {
     // Auto-deploy on schedule
     if (millis() - lastDeploy >= DEPLOY_INTERVAL && !cycleInProgress && retractConfirmed) {
-        lastDeploy = millis();
+        //lastDeploy = millis();
         triggerDeploy("");
     }
 
@@ -255,7 +275,16 @@ void loop() {
     }
 
     // Only publish once BOTH data is received AND deployment is confirmed
-    if (allDataReceived && deployedConfirmed && millis() - lastPublish >= 1100) {
+    if (allDataReceived && deployedConfirmed && millis() - lastPublish >= 1500) {
+        if (!cycleStartPublished) {
+            Particle.publish("cycle_start", "", PRIVATE);
+            cycleStartPublished = true;
+            lastPublish = millis();
+            return;
+        }
+        if (!Particle.connected()) {
+            waitFor(Particle.connected, 180000);
+        }
         publishNextFromSD();
     }
 
